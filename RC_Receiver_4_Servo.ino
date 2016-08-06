@@ -38,6 +38,9 @@ const int maxVehicleNumber = 5;
 // the ID number of the used "radio pipe" must match with the selected ID on the transmitter!
 const uint64_t pipeIn[maxVehicleNumber] = { 0xE9E8F0F0B1LL, 0xE9E8F0F0B2LL, 0xE9E8F0F0B3LL, 0xE9E8F0F0B4LL, 0xE9E8F0F0B5LL };
 
+// Hardware configuration: Set up nRF24L01 radio on hardware SPI bus & pins 7 (CE) & 8 (CSN)
+RF24 radio(7, 8);
+
 // The size of this struct should not exceed 32 bytes
 struct RcData {
   byte axis1; // Aileron (Steering for car)
@@ -47,14 +50,15 @@ struct RcData {
   boolean mode1 = false; // Speed limitation
   boolean mode2 = false;
 };
-
 RcData data;
 
-// Hardware configuration: Set up nRF24L01 radio on hardware SPI bus & pins 7 (CE) & 8 (CSN)
-RF24 radio(7, 8);
-
-// Battery
-boolean batteryOK = false;
+// This struct defines data, which are embedded inside the ACK payload
+struct ackPayload {
+  float vcc; // vehicle vcc voltage
+  float batteryVoltage; // vehicle battery voltage
+  boolean batteryOk; // the vehicle battery voltage is OK!
+};
+ackPayload payload;
 
 // Create Servo objects
 Servo servo1;
@@ -91,8 +95,10 @@ void setup() {
   radio.setPALevel(RF24_PA_HIGH);
   radio.setDataRate(RF24_250KBPS);
   radio.setAutoAck(true);                  // Ensure autoACK is enabled
-  radio.setRetries(1, 5);                  // 1x250us delay (blocking!!), max. 5 retries
-  radio.setCRCLength(RF24_CRC_8);          // Use 8-bit CRC for performance
+  radio.enableAckPayload();
+  radio.enableDynamicPayloads();
+  radio.setRetries(5, 5);                  // 5x250us delay (blocking!!), max. 5 retries
+  //radio.setCRCLength(RF24_CRC_8);          // Use 8-bit CRC for performance
 
 #ifdef DEBUG
   radio.printDetails();
@@ -126,7 +132,7 @@ void setup() {
 void led() {
 
   // Red LED (ON = battery empty, blinking = OK
-  if (batteryOK) {
+  if (payload.batteryOk) {
     battLED.flash(140, 150, 500, vehicleNumber); // ON, OFF, PAUSE, PULSES
   } else {
     battLED.off(); // Always ON = battery low voltage
@@ -142,9 +148,11 @@ void led() {
 void readRadio() {
 
   static unsigned long lastRecvTime = 0;
+  byte pipeNo;
 
-  if (radio.available()) {
-    radio.read(&data, sizeof(RcData));
+  if (radio.available(&pipeNo)) {
+    radio.writeAckPayload(pipeNo, &payload, sizeof(struct ackPayload) );  // prepare the ACK payload
+    radio.read(&data, sizeof(struct RcData)); // read the radia data and send out the ACK payload
     lastRecvTime = millis();
 #ifdef DEBUG
     Serial.print(data.axis1);
@@ -158,7 +166,7 @@ void readRadio() {
 #endif
   }
 
-  if (millis() - lastRecvTime > 1000) { // bring all servos to their middle position, if no RC signal is received for 1s!
+  if (millis() - lastRecvTime > 1000) { // bring all servos to their middle position, if no RC signal is received during 1s!
     data.axis1 = 50; // Aileron (Steering for car)
     data.axis2 = 50; // Elevator
     data.axis3 = 50; // Throttle
@@ -185,24 +193,24 @@ void writeServos() {
 
 //
 // =======================================================================================================
-// CHECK BATTERY VOLTAGE
+// CHECK RX BATTERY VOLTAGE (Battery is NOT monitored)
 // =======================================================================================================
 //
 
 void checkBattery() {
-  float batteryVolt = readVcc() / 1000.0 ;
+  payload.vcc = readVcc() / 1000.0 ;
 
-  if (batteryVolt >= 3.0) {
-    batteryOK = true;
+  if (payload.vcc >= 3.0) {
+    payload.batteryOk = true;
 #ifdef DEBUG
-    Serial.print(batteryVolt);
-    Serial.println(" V. Battery OK");
+    Serial.print(payload.vcc);
+    Serial.println(" Vcc OK");
 #endif
   } else {
-    batteryOK = false;
+    payload.batteryOk = false;
 #ifdef DEBUG
-    Serial.print(batteryVolt);
-    Serial.println(" V. Battery empty!");
+    Serial.print(payload.vcc);
+    Serial.println(" Vcc Low!");
 #endif
   }
 }
